@@ -46,6 +46,7 @@ def get_motion_module(
     else:
         raise ValueError
 
+# DEBUG_MODE = True
 
 class VanillaTemporalModule(nn.Module):
     def __init__(
@@ -61,7 +62,13 @@ class VanillaTemporalModule(nn.Module):
         zero_initialize                    = True,
     ):
         super().__init__()
-        
+        ''' 
+        if DEBUG_MODE:
+            input_args = locals()
+            save-
+            with open("data.json", "w") as fp:
+                json.dump(input_args, fp)
+        '''
         self.temporal_transformer = TemporalTransformer3DModel(
             in_channels=in_channels,
             num_attention_heads=num_attention_heads,

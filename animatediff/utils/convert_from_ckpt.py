@@ -713,8 +713,9 @@ def convert_ldm_bert_checkpoint(checkpoint, config):
     return hf_model
 
 
-def convert_ldm_clip_checkpoint(checkpoint):
-    text_model = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14")
+def convert_ldm_clip_checkpoint(checkpoint, sd_path='models/StableDiffusion/stable-diffusion-v1-5'):
+    # text_model = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14")
+    text_model = CLIPTextModel.from_pretrained(sd_path, subfolder="text_encoder")
     keys = list(checkpoint.keys())
 
     text_model_dict = {}
