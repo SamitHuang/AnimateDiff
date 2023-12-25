@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
+import json
+import os
 
 import torch
 import numpy as np
@@ -46,7 +48,9 @@ def get_motion_module(
     else:
         raise ValueError
 
-# DEBUG_MODE = True
+DEBUG_MODE = True
+mm_idx = 0
+mm_run_idx = 0
 
 class VanillaTemporalModule(nn.Module):
     def __init__(
@@ -62,13 +66,26 @@ class VanillaTemporalModule(nn.Module):
         zero_initialize                    = True,
     ):
         super().__init__()
-        ''' 
         if DEBUG_MODE:
-            input_args = locals()
-            save-
-            with open("data.json", "w") as fp:
+            global mm_idx
+            # input_args = locals()
+            input_args = dict(
+                in_channels=in_channels,
+                num_attention_heads=num_attention_heads,
+                num_transformer_block=num_transformer_block,
+                attention_block_types=attention_block_types,
+                cross_frame_attention_mode=cross_frame_attention_mode,
+                temporal_position_encoding=temporal_position_encoding,
+                temporal_position_encoding_max_len =temporal_position_encoding_max_len,
+                temporal_attention_dim_div=temporal_attention_dim_div,
+                zero_initialize=zero_initialize,
+                ) 
+            
+            save_fp = 'debug_mm/mm{}_args.json'.format(mm_idx)
+            with open(save_fp, "w") as fp:
                 json.dump(input_args, fp)
-        '''
+            mm_idx += 1
+
         self.temporal_transformer = TemporalTransformer3DModel(
             in_channels=in_channels,
             num_attention_heads=num_attention_heads,
@@ -84,10 +101,34 @@ class VanillaTemporalModule(nn.Module):
             self.temporal_transformer.proj_out = zero_module(self.temporal_transformer.proj_out)
 
     def forward(self, input_tensor, temb, encoder_hidden_states, attention_mask=None, anchor_frame_idx=None):
+        
+        # print("D--: encoder_hidden_states ", encoder_hidden_states)
+        if DEBUG_MODE:
+            global mm_run_idx
+            if not os.path.exists('debug_mm'):
+                os.makedirs('debug_mm')
+            outfile = f'debug_mm/mm{mm_run_idx}_inputs.npz'
+            np.savez(outfile, 
+                    input_tensor=input_tensor.cpu().detach().numpy(), 
+                    temb=temb.cpu().detach().numpy(),
+                    encoder_hidden_states=encoder_hidden_states.cpu().detach().numpy(), 
+                    attention_mask=attention_mask.cpu().detach().numpy() if attention_mask is not None else None, 
+                    anchor_frame_idx=anchor_frame_idx.cpu().detach().numpy() if anchor_frame_idx is not None else None,
+                    )
+         
+
         hidden_states = input_tensor
         hidden_states = self.temporal_transformer(hidden_states, encoder_hidden_states, attention_mask)
 
         output = hidden_states
+
+        if DEBUG_MODE:
+            outfile2 = f'debug_mm/mm{mm_run_idx}_outputs.npz'
+            np.savez(outfile2, 
+                    output=output.cpu().detach().numpy(), 
+                    )
+
+            mm_run_idx += 1
         return output
 
 
@@ -301,7 +342,8 @@ class VersatileAttention(CrossAttention):
 
         if self.added_kv_proj_dim is not None:
             raise NotImplementedError
-
+        
+        # print("D--: encoder_hidden_states ", encoder_hidden_states)
         encoder_hidden_states = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
         key = self.to_k(encoder_hidden_states)
         value = self.to_v(encoder_hidden_states)
