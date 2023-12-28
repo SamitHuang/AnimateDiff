@@ -34,10 +34,11 @@ from diffusers.utils.import_utils import is_xformers_available
 import transformers
 from transformers import CLIPTextModel, CLIPTokenizer
 
-from animatediff.data.dataset import WebVid10M
+from animatediff.data.dataset import WebVid10M, TextVideoDataset
 from animatediff.models.unet import UNet3DConditionModel
 from animatediff.pipelines.pipeline_animation import AnimationPipeline
 from animatediff.utils.util import save_videos_grid, zero_rank_print
+from animatediff.utils.convert_from_ckpt import convert_ldm_unet_checkpoint, convert_ldm_clip_checkpoint, convert_ldm_vae_checkpoint
 
 
 
@@ -88,7 +89,9 @@ def main(
     validation_data: Dict,
     cfg_random_null_text: bool = True,
     cfg_random_null_text_ratio: float = 0.1,
-    
+
+    pretrained_motion_module_path: str = "",
+    dreambooth_model_path: str = "", 
     unet_checkpoint_path: str = "",
     unet_additional_kwargs: Dict = {},
     ema_decay: float = 0.9999,
@@ -98,6 +101,7 @@ def main(
     max_train_steps: int = 100,
     validation_steps: int = 100,
     validation_steps_tuple: Tuple = (-1,),
+    ckpt_save_steps: int=1000,
 
     learning_rate: float = 3e-5,
     scale_lr: bool = False,
@@ -124,12 +128,14 @@ def main(
     is_debug: bool = False,
 ):
     check_min_version("0.10.0.dev0")
+    validation_steps_tuple = [vs * gradient_accumulation_steps for vs in validation_steps_tuple]
 
     # Initialize distributed training
     local_rank      = init_dist(launcher=launcher)
     global_rank     = dist.get_rank()
     num_processes   = dist.get_world_size()
     is_main_process = global_rank == 0
+
 
     seed = global_seed + global_rank
     torch.manual_seed(seed)
@@ -174,7 +180,7 @@ def main(
     else:
         unet = UNet2DConditionModel.from_pretrained(pretrained_model_path, subfolder="unet")
         
-    # Load pretrained unet weights
+    # Load pretrained unet weights or dreambooth model
     if unet_checkpoint_path != "":
         zero_rank_print(f"from checkpoint: {unet_checkpoint_path}")
         unet_checkpoint_path = torch.load(unet_checkpoint_path, map_location="cpu")
@@ -184,7 +190,35 @@ def main(
         m, u = unet.load_state_dict(state_dict, strict=False)
         zero_rank_print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
         assert len(u) == 0
-        
+
+    elif dreambooth_model_path != "":
+        print(f"load dreambooth model from {dreambooth_model_path}")
+        if dreambooth_model_path.endswith(".safetensors"):
+            dreambooth_state_dict = {}
+            with safe_open(dreambooth_model_path, framework="pt", device="cpu") as f:
+                for key in f.keys():
+                    dreambooth_state_dict[key] = f.get_tensor(key)
+        elif dreambooth_model_path.endswith(".ckpt"):
+            dreambooth_state_dict = torch.load(dreambooth_model_path, map_location="cpu")
+        converted_vae_checkpoint = convert_ldm_vae_checkpoint(dreambooth_state_dict, vae.config)
+        vae.load_state_dict(converted_vae_checkpoint)
+        converted_unet_checkpoint = convert_ldm_unet_checkpoint(dreambooth_state_dict, unet.config)
+        unet.load_state_dict(converted_unet_checkpoint, strict=False)
+        text_encoder = convert_ldm_clip_checkpoint(dreambooth_state_dict)
+        del dreambooth_state_dict
+     
+
+    # Load pretrained motion module weights if have
+    if pretrained_motion_module_path != "": 
+        print("Loading pretrained motion module from: ", pretrained_motion_module_path)
+        motion_module_state_dict = torch.load(pretrained_motion_module_path, map_location="cpu")
+        motion_module_state_dict = motion_module_state_dict["state_dict"] if "state_dict" in motion_module_state_dict else motion_module_state_dict
+        # state_dict.update({name: param for name, param in motion_module_state_dict.items() if "motion_modules." in name})
+        m, u = unet.load_state_dict(motion_module_state_dict, strict=False)
+        zero_rank_print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
+        print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
+        assert len(u) == 0
+ 
     # Freeze vae and text_encoder
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
@@ -198,6 +232,14 @@ def main(
                 break
             
     trainable_params = list(filter(lambda p: p.requires_grad, unet.parameters()))
+    print("D--: num trainable params: ", len(trainable_params))
+    '''
+    with open('tmp_trainable_params.txt', 'w') as fp:
+        for name, param in unet.named_parameters():
+                if param.requires_grad:
+                    fp.write(name + '\n')
+    '''
+
     optimizer = torch.optim.AdamW(
         trainable_params,
         lr=learning_rate,
@@ -226,7 +268,8 @@ def main(
     text_encoder.to(local_rank)
 
     # Get the training dataset
-    train_dataset = WebVid10M(**train_data, is_image=image_finetune)
+    # train_dataset = WebVid10M(**train_data, is_image=image_finetune)
+    train_dataset = TextVideoDataset(**train_data, is_image=image_finetune)
     distributed_sampler = DistributedSampler(
         train_dataset,
         num_replicas=num_processes,
@@ -298,8 +341,9 @@ def main(
         logging.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
         logging.info(f"  Gradient Accumulation steps = {gradient_accumulation_steps}")
         logging.info(f"  Total optimization steps = {max_train_steps}")
-    global_step = 0
+    global_step = 0 # optimized step
     first_epoch = 0
+    grad_step = 0
 
     # Only show the progress bar once on each machine.
     progress_bar = tqdm(range(global_step, max_train_steps), disable=not is_main_process)
@@ -377,29 +421,40 @@ def main(
             # Mixed-precision training
             with torch.cuda.amp.autocast(enabled=mixed_precision_training):
                 model_pred = unet(noisy_latents, timesteps, encoder_hidden_states).sample
-                loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean") / gradient_accumulation_steps
 
             optimizer.zero_grad()
 
             # Backpropagate
             if mixed_precision_training:
+                # Accumulates scaled gradients
                 scaler.scale(loss).backward()
-                """ >>> gradient clipping >>> """
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(unet.parameters(), max_grad_norm)
-                """ <<< gradient clipping <<< """
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                """ >>> gradient clipping >>> """
-                torch.nn.utils.clip_grad_norm_(unet.parameters(), max_grad_norm)
-                """ <<< gradient clipping <<< """
-                optimizer.step()
+                if (grad_step + 1) % gradient_accumulation_steps == 0:
+                    """ >>> gradient clipping >>> """
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(unet.parameters(), max_grad_norm)
+                    """ <<< gradient clipping <<< """
+                    # TODO: gradient accumulation missed here
+                    scaler.step(optimizer)
+                    scaler.update()
 
+                    progress_bar.update(1)
+                    global_step += 1
+            else:
+                # Accumulates scaled gradients
+                loss.backward()
+                if (grad_step + 1) % gradient_accumulation_steps == 0:
+                    """ >>> gradient clipping >>> """
+                    torch.nn.utils.clip_grad_norm_(unet.parameters(), max_grad_norm)
+                    """ <<< gradient clipping <<< """
+                    # TODO: gradient accumulation missed here
+                    optimizer.step()
+
+                    progress_bar.update(1)
+                    global_step += 1
+            
+            grad_step += 1
             lr_scheduler.step()
-            progress_bar.update(1)
-            global_step += 1
             
             ### <<<< Training <<<< ###
             
@@ -408,7 +463,8 @@ def main(
                 wandb.log({"train_loss": loss.item()}, step=global_step)
                 
             # Save checkpoint
-            if is_main_process and (global_step % checkpointing_steps == 0 or step == len(train_dataloader) - 1):
+            # if is_main_process and (global_step % checkpointing_steps == 0 or step == len(train_dataloader) - 1):
+            if is_main_process and (grad_step % (checkpointing_steps * gradient_accumulation_steps) == 0 or grad_step == len(train_dataloader)*num_train_epochs - 1):
                 save_path = os.path.join(output_dir, f"checkpoints")
                 state_dict = {
                     "epoch": epoch,
@@ -421,8 +477,10 @@ def main(
                     torch.save(state_dict, os.path.join(save_path, f"checkpoint.ckpt"))
                 logging.info(f"Saved state to {save_path} (global_step: {global_step})")
                 
+ 
+            ### >>>> Validation >>>> ###
             # Periodically validation
-            if is_main_process and (global_step % validation_steps == 0 or global_step in validation_steps_tuple):
+            if is_main_process and (grad_step % (validation_steps * gradient_accumulation_steps) == 0 or grad_step in validation_steps_tuple):
                 samples = []
                 
                 generator = torch.Generator(device=latents.device)
@@ -468,7 +526,7 @@ def main(
                     save_path = f"{output_dir}/samples/sample-{global_step}.png"
                     torchvision.utils.save_image(samples, save_path, nrow=4)
 
-                logging.info(f"Saved samples to {save_path}")
+                logging.info(f"Saved samples to {save_path}")           
                 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)

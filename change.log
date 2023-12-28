@@ -1,0 +1,6 @@
+train.py    
+
+```
+# train_dataset = WebVid10M(**train_data, is_image=image_finetune)
+train_dataset = TextVideoDataset(**train_data, is_image=image_finetune)
+```

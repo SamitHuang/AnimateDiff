@@ -1,0 +1,29 @@
+SDZoomIn:
+  motion_module:
+    - "models/Motion_Module/animatediff/mm_sd_v15_v2.ckpt"
+
+  motion_module_lora_configs:
+    - path:  "models/MotionLoRA/v2_lora_ZoomIn.ckpt"
+      alpha: 1.0
+
+  dreambooth_path: ""
+  lora_model_path: ""
+
+  seed:           [42]
+  steps:          25
+  guidance_scale: 7.5
+
+  prompt:
+    - "a cat, looking at viewer, blurry background"
+    - "a dog, looking at viewer, blurry background"
+    - "a wolf, looking at viewer, blurry background"
+    - "a tiger, looking at viewer, blurry background"
+    - "a lion, looking at viewer, blurry background"
+    - "a cute little cat, looking at viewer, blurry background"
+    - "a cute little dog, looking at viewer, blurry background"
+    - "a cute little wolf, looking at viewer, blurry background"
+    - "a cute little tiger, looking at viewer, blurry background"
+    - "a cute little lion, looking at viewer, blurry background"
+
+  n_prompt:
+    - ""

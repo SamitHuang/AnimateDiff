@@ -1,0 +1,25 @@
+ToonYouZoomIn:
+  motion_module:
+    # - "models/Motion_Module/mm_sd_v14.ckpt"
+    - "models/Motion_Module/animatediff/mm_sd_v15_v2.ckpt"
+
+  motion_module_lora_configs:
+    - path:  "models/MotionLoRA/v2_lora_ZoomIn.ckpt"
+      alpha: 1.0
+
+  dreambooth_path: "models/DreamBooth_LoRA/toonyou_beta3.safetensors"
+  lora_model_path: ""
+
+  seed:           [42]
+  steps:          25
+  guidance_scale: 7.5
+
+  prompt:
+    - "best quality, masterpiece, 1girl, looking at viewer, blurry background, upper body, contemporary, dress"
+    - "a cute girl, looking at viewer, blurry background"
+    - "a cute boy, looking at viewer, blurry background"
+    - "a man, looking at viewer, blurry background"
+    - "a yound lady, looking at viewer, blurry background"
+    - "a beautiful girl, looking at viewer, blurry background"
+  n_prompt:
+    - ""

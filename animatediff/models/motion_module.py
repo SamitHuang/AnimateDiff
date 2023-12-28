@@ -48,9 +48,12 @@ def get_motion_module(
     else:
         raise ValueError
 
-DEBUG_MODE = True
+DEBUG_MODE = False 
 mm_idx = 0
 mm_run_idx = 0
+if DEBUG_MODE:
+    if not os.path.exists('debug_mm'):
+        os.makedirs('debug_mm')
 
 class VanillaTemporalModule(nn.Module):
     def __init__(
@@ -105,8 +108,6 @@ class VanillaTemporalModule(nn.Module):
         # print("D--: encoder_hidden_states ", encoder_hidden_states)
         if DEBUG_MODE:
             global mm_run_idx
-            if not os.path.exists('debug_mm'):
-                os.makedirs('debug_mm')
             outfile = f'debug_mm/mm{mm_run_idx}_inputs.npz'
             np.savez(outfile, 
                     input_tensor=input_tensor.cpu().detach().numpy(), 
