@@ -33,11 +33,11 @@ noise_scheduler_kwargs:
   clip_sample:         false
 
 train_data:
-  csv_path:        "train_data/video_caption.csv"
-  video_folder:    "train_data"
+  csv_path:        "datasets/webvid5/video_caption.csv"
+  video_folder:    "datasets/webvid5"
   sample_size:     256
-  sample_stride:   1 # only for gif dataset!!
-  sample_n_frames: 12 # debug. without more memory reduce methods, 12 for 3090 
+  sample_stride:   4 # only for gif dataset!!
+  sample_n_frames: 16 # debug. without more memory reduce methods, 12 for 3090 
 
 validation_data:
   prompts:
@@ -49,8 +49,8 @@ trainable_modules:
   - "motion_modules."
 
 learning_rate:    5.e-5
-train_batch_size: 1 # debug
-gradient_accumulation_steps: 4 # debug
+train_batch_size: 4 # debug
+gradient_accumulation_steps: 1 # debug
 
 max_train_epoch:      -1
 max_train_steps:      10000
