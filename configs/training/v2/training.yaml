@@ -8,14 +8,16 @@ unet_additional_kwargs:
   motion_module_resolutions      : [ 1,2,4,8 ]
   unet_use_cross_frame_attention : false
   unet_use_temporal_attention    : false
+  use_inflated_groupnorm: true # false for mm v1, true for mm v2
 
   motion_module_type: Vanilla
+  motion_module_mid_block: true # false for v1, true for v2
   motion_module_kwargs:
     num_attention_heads                : 8
     num_transformer_block              : 1
     attention_block_types              : [ "Temporal_Self", "Temporal_Self" ]
     temporal_position_encoding         : true
-    temporal_position_encoding_max_len : 24
+    temporal_position_encoding_max_len : 32 # 24 for v1, 32 for v2
     temporal_attention_dim_div         : 1
     zero_initialize                    : true
 
@@ -30,7 +32,7 @@ noise_scheduler_kwargs:
 train_data:
   csv_path:        "datasets/webvid5/video_caption.csv"
   video_folder:    "datasets/webvid5"
-  sample_size:     256
+  sample_size:     512
   sample_stride:   4
   sample_n_frames: 16 # debug
 
@@ -46,19 +48,20 @@ trainable_modules:
 unet_checkpoint_path: ""
 
 learning_rate:    1.e-4
-train_batch_size: 1 # debug
-gradient_accumulation_steps: 4
+train_batch_size: 1    # adjust
+gradient_accumulation_steps: 1
 
 max_train_epoch:      -1
-max_train_steps:      10000
+max_train_steps:      12000
 checkpointing_epochs: -1
-checkpointing_steps:  1000
+checkpointing_steps:  2000
 
-validation_steps:       250
-validation_steps_tuple: [50, 100]
+val_while_train: false 
+validation_steps:       1000
+validation_steps_tuple: [1, 100]
 
 global_seed: 42
 mixed_precision_training: true
-enable_xformers_memory_efficient_attention: True
+enable_xformers_memory_efficient_attention: true # debug
 
 is_debug: False
