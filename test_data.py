@@ -1,6 +1,5 @@
 import os
 import math
-import wandb
 import random
 import logging
 import inspect
@@ -155,9 +154,6 @@ def main(
         level=logging.INFO,
     )
 
-    if is_main_process and (not is_debug) and use_wandb:
-        run = wandb.init(project="animatediff", name=folder_name, config=config)
-
     # Handle the output folder creation
     if is_main_process:
         os.makedirs(output_dir, exist_ok=True)
@@ -228,13 +224,12 @@ def main(
     scaler = torch.cuda.amp.GradScaler() if mixed_precision_training else None
     
     import time
-    start = time.time()
     tot = 0
     steps  = 50
     num_batches = len(train_dataloader)
     for epoch in range(steps//num_batches):
-        train_dataloader.sampler.set_epoch(epoch)
-        
+        # train_dataloader.sampler.set_epoch(epoch)
+        start = time.time()
         for step, batch in enumerate(train_dataloader):
             pixel_values, texts = batch['pixel_values'].cpu(), batch['text']
             dur = time.time() - start 

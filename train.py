@@ -7,6 +7,7 @@ import inspect
 import argparse
 import datetime
 import subprocess
+import time
 
 from pathlib import Path
 from tqdm.auto import tqdm
@@ -99,6 +100,7 @@ def main(
     
     max_train_epoch: int = -1,
     max_train_steps: int = 100,
+    val_while_train: bool = True,
     validation_steps: int = 100,
     validation_steps_tuple: Tuple = (-1,),
     ckpt_save_steps: int=1000,
@@ -150,7 +152,7 @@ def main(
 
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
-        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
     )
@@ -177,6 +179,7 @@ def main(
             pretrained_model_path, subfolder="unet", 
             unet_additional_kwargs=OmegaConf.to_container(unet_additional_kwargs)
         )
+
     else:
         unet = UNet2DConditionModel.from_pretrained(pretrained_model_path, subfolder="unet")
         
@@ -310,16 +313,17 @@ def main(
     )
 
     # Validation pipeline
-    if not image_finetune:
-        validation_pipeline = AnimationPipeline(
-            unet=unet, vae=vae, tokenizer=tokenizer, text_encoder=text_encoder, scheduler=noise_scheduler,
-        ).to("cuda")
-    else:
-        validation_pipeline = StableDiffusionPipeline.from_pretrained(
-            pretrained_model_path,
-            unet=unet, vae=vae, tokenizer=tokenizer, text_encoder=text_encoder, scheduler=noise_scheduler, safety_checker=None,
-        )
-    validation_pipeline.enable_vae_slicing()
+    if val_while_train:
+        if not image_finetune:
+            validation_pipeline = AnimationPipeline(
+                unet=unet, vae=vae, tokenizer=tokenizer, text_encoder=text_encoder, scheduler=noise_scheduler,
+            ).to("cuda")
+        else:
+            validation_pipeline = StableDiffusionPipeline.from_pretrained(
+                pretrained_model_path,
+                unet=unet, vae=vae, tokenizer=tokenizer, text_encoder=text_encoder, scheduler=noise_scheduler, safety_checker=None,
+            )
+        validation_pipeline.enable_vae_slicing()
 
     # DDP warpper
     unet.to(local_rank)
@@ -351,12 +355,18 @@ def main(
 
     # Support mixed-precision training
     scaler = torch.cuda.amp.GradScaler() if mixed_precision_training else None
-
+    step_end_time = 0
     for epoch in range(first_epoch, num_train_epochs):
         train_dataloader.sampler.set_epoch(epoch)
         unet.train()
-        
         for step, batch in enumerate(train_dataloader):
+            dur_data_train = time.time() - step_end_time
+            step_end_time = time.time()
+
+            logging.info("Step: {}, data + train step time: {:.5f} ".format(step, dur_data_train))  
+
+            start_time = time.time() 
+
             if cfg_random_null_text:
                 batch['text'] = [name if random.random() > cfg_random_null_text_ratio else "" for name in batch['text']]
                 
@@ -477,10 +487,13 @@ def main(
                     torch.save(state_dict, os.path.join(save_path, f"checkpoint.ckpt"))
                 logging.info(f"Saved state to {save_path} (global_step: {global_step})")
                 
+            dur = time.time() - start_time
+            logging.info("Step: {}, training step time: {:.5f}".format(step, dur))
+
  
             ### >>>> Validation >>>> ###
             # Periodically validation
-            if is_main_process and (grad_step % (validation_steps * gradient_accumulation_steps) == 0 or grad_step in validation_steps_tuple):
+            if val_while_train and is_main_process and (grad_step % (validation_steps * gradient_accumulation_steps) == 0 or grad_step in validation_steps_tuple):
                 samples = []
                 
                 generator = torch.Generator(device=latents.device)
@@ -533,7 +546,8 @@ def main(
             
             if global_step >= max_train_steps:
                 break
-            
+            # ========================== End of Validation ==================== #      
+        
     dist.destroy_process_group()
 
 
