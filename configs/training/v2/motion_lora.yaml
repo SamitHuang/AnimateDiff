@@ -67,6 +67,6 @@ validation_steps_tuple: [1, 100]
 
 global_seed: 42
 mixed_precision_training: true
-enable_xformers_memory_efficient_attention: true    # debug
+enable_xformers_memory_efficient_attention: false    # debug
 
 is_debug: False
