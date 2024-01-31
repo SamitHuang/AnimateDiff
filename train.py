@@ -88,6 +88,7 @@ def main(
 
     train_data: Dict,
     validation_data: Dict,
+    motion_lora_finetune: bool = False,
     cfg_random_null_text: bool = True,
     cfg_random_null_text_ratio: float = 0.1,
 

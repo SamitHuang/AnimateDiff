@@ -10,13 +10,15 @@ from torch import nn
 import torchvision
 
 from diffusers.configuration_utils import ConfigMixin, register_to_config
-from diffusers.models.modeling_utils import ModelMixin
+from diffusers.modeling_utils import ModelMixin
 from diffusers.utils import BaseOutput
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.models.attention import CrossAttention, FeedForward
 
 from einops import rearrange, repeat
 import math
+
+from .lora import LoRALinearLayer
 
 
 def zero_module(module):
@@ -67,6 +69,9 @@ class VanillaTemporalModule(nn.Module):
         temporal_position_encoding_max_len = 24,
         temporal_attention_dim_div         = 1,
         zero_initialize                    = True,
+        use_lora = False,
+        lora_rank=64,
+        lora_alpha=64,
     ):
         super().__init__()
         if DEBUG_MODE:
@@ -98,6 +103,9 @@ class VanillaTemporalModule(nn.Module):
             cross_frame_attention_mode=cross_frame_attention_mode,
             temporal_position_encoding=temporal_position_encoding,
             temporal_position_encoding_max_len=temporal_position_encoding_max_len,
+            use_lora=use_lora,
+            lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
         )
         
         if zero_initialize:
@@ -152,6 +160,9 @@ class TemporalTransformer3DModel(nn.Module):
         cross_frame_attention_mode         = None,
         temporal_position_encoding         = False,
         temporal_position_encoding_max_len = 24,
+        use_lora = False,
+        lora_rank=64,
+        lora_alpha=64,
     ):
         super().__init__()
 
@@ -176,6 +187,9 @@ class TemporalTransformer3DModel(nn.Module):
                     cross_frame_attention_mode=cross_frame_attention_mode,
                     temporal_position_encoding=temporal_position_encoding,
                     temporal_position_encoding_max_len=temporal_position_encoding_max_len,
+                    use_lora=use_lora,
+                    lora_rank=lora_rank,
+                    lora_alpha=lora_alpha,
                 )
                 for d in range(num_layers)
             ]
@@ -225,6 +239,9 @@ class TemporalTransformerBlock(nn.Module):
         cross_frame_attention_mode         = None,
         temporal_position_encoding         = False,
         temporal_position_encoding_max_len = 24,
+        use_lora = False,
+        lora_rank=64,
+        lora_alpha=64,
     ):
         super().__init__()
 
@@ -247,6 +264,9 @@ class TemporalTransformerBlock(nn.Module):
                     cross_frame_attention_mode=cross_frame_attention_mode,
                     temporal_position_encoding=temporal_position_encoding,
                     temporal_position_encoding_max_len=temporal_position_encoding_max_len,
+                    use_lora=use_lora,
+                    lora_rank=lora_rank,
+                    lora_alpha=lora_alpha,
                 )
             )
             norms.append(nn.LayerNorm(dim))
@@ -301,6 +321,9 @@ class VersatileAttention(CrossAttention):
             cross_frame_attention_mode         = None,
             temporal_position_encoding         = False,
             temporal_position_encoding_max_len = 24,            
+            use_lora = False,
+            lora_rank=64,
+            lora_alpha=64,
             *args, **kwargs
         ):
         super().__init__(*args, **kwargs)
@@ -314,51 +337,31 @@ class VersatileAttention(CrossAttention):
             dropout=0., 
             max_len=temporal_position_encoding_max_len
         ) if (temporal_position_encoding and attention_mode == "Temporal") else None
+        '''
+        self.to_q = nn.Linear(query_dim, inner_dim, bias=bias)
+        self.to_k = nn.Linear(cross_attention_dim, inner_dim, bias=bias)
+        self.to_v = nn.Linear(cross_attention_dim, inner_dim, bias=bias)
 
-        self._use_memory_efficient_attention_xformers = False
+        self.to_out = nn.ModuleList([])
+        self.to_out.append(nn.Linear(inner_dim, query_dim))
+        self.to_out.append(nn.Dropout(dropout))
+        '''
+        self.use_lora = use_lora
+        if use_lora:
+            print("D--: use lora", use_lora)
+            dim_head = kwargs["dim_head"]
+            heads = kwargs["heads"]
+            query_dim = kwargs["query_dim"] 
+            cross_attention_dim = kwargs["cross_attention_dim"]
+            cross_attention_dim = cross_attention_dim if cross_attention_dim is not None else query_dim
+            inner_dim = dim_head * heads
+            self.to_q_lora = LoRALinearLayer(in_features=query_dim, out_features=inner_dim, rank=lora_rank, network_alpha=lora_alpha)
+            self.to_k_lora = LoRALinearLayer(in_features=cross_attention_dim, out_features=inner_dim, rank=lora_rank, network_alpha=lora_alpha)
+            self.to_v_lora = LoRALinearLayer(in_features=cross_attention_dim, out_features=inner_dim, rank=lora_rank, network_alpha=lora_alpha)
+            self.to_out_lora = LoRALinearLayer(in_features=inner_dim, out_features=query_dim, rank=lora_rank, network_alpha=lora_alpha)
 
     def extra_repr(self):
         return f"(Module Info) Attention_Mode: {self.attention_mode}, Is_Cross_Attention: {self.is_cross_attention}"
-
-    # adapt for diffusers=0.12
-    def set_use_memory_efficient_attention_xformers(self, use_memory_efficient_attention_xformers: bool, attention_op=None):
-        if not is_xformers_available():
-            raise ModuleNotFoundError(
-                "Refer to https://github.com/facebookresearch/xformers for more information on how to install"
-                " xformers",
-                name="xformers",
-            )
-        elif not torch.cuda.is_available():
-            raise ValueError(
-                "torch.cuda.is_available() should be True but is False. xformers' memory efficient attention is only"
-                " available for GPU "
-            )
-        else:
-            try:
-                # Make sure we can run the memory efficient attention
-                _ = xformers.ops.memory_efficient_attention(
-                    torch.randn((1, 2, 40), device="cuda"),
-                    torch.randn((1, 2, 40), device="cuda"),
-                    torch.randn((1, 2, 40), device="cuda"),
-                )
-            except Exception as e:
-                raise e
-            self._use_memory_efficient_attention_xformers = use_memory_efficient_attention_xformers
-
-    # adapt for diffusers=0.12
-    def _memory_efficient_attention_xformers(self, query, key, value, attention_mask):
-        # TODO attention_mask
-        query = query.contiguous()
-        key = key.contiguous()
-        value = value.contiguous()
-
-        hidden_states = xformers.ops.memory_efficient_attention(query, key, value, attn_bias=attention_mask)
-
-        hidden_states = hidden_states.to(query.dtype)
-
-        hidden_states = self.batch_to_head_dim(hidden_states)
-        return hidden_states
-
 
     def forward(self, hidden_states, encoder_hidden_states=None, attention_mask=None, video_length=None):
         batch_size, sequence_length, _ = hidden_states.shape
@@ -378,24 +381,30 @@ class VersatileAttention(CrossAttention):
 
         if self.group_norm is not None:
             hidden_states = self.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
-
+        # q
         query = self.to_q(hidden_states)
+        if self.use_lora:
+            # TODO: dropout, but it's always 0. skip.
+            query = query + self.to_q_lora(hidden_states)
         dim = query.shape[-1]
-        # query = self.reshape_heads_to_batch_dim(query)
-        query = self.head_to_batch_dim(query)
+        query = self.reshape_heads_to_batch_dim(query)
 
         if self.added_kv_proj_dim is not None:
             raise NotImplementedError
         
         # print("D--: encoder_hidden_states ", encoder_hidden_states)
         encoder_hidden_states = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
+        # k
         key = self.to_k(encoder_hidden_states)
+        if self.use_lora:
+            key = key + self.to_k_lora(encoder_hidden_states)
+        # v
         value = self.to_v(encoder_hidden_states)
-
-        # key = self.reshape_heads_to_batch_dim(key)
-        key = self.head_to_batch_dim(key) # adapt for diffusers 0.12
-        # value = self.reshape_heads_to_batch_dim(value)
-        value = self.head_to_batch_dim(value)
+        if self.use_lora:
+            value = value + self.to_v_lora(encoder_hidden_states)
+        
+        key = self.reshape_heads_to_batch_dim(key)
+        value = self.reshape_heads_to_batch_dim(value)
 
         if attention_mask is not None:
             if attention_mask.shape[-1] != query.shape[1]:
@@ -413,9 +422,13 @@ class VersatileAttention(CrossAttention):
                 hidden_states = self._attention(query, key, value, attention_mask)
             else:
                 hidden_states = self._sliced_attention(query, key, value, sequence_length, dim, attention_mask)
-
+        # out
         # linear proj
-        hidden_states = self.to_out[0](hidden_states)
+        hidden_states_main = self.to_out[0](hidden_states)
+        if self.use_lora:
+            hidden_states = hidden_states_main + self.to_out_lora(hidden_states)
+        else:
+            hidden_states = hidden_states_main
 
         # dropout
         hidden_states = self.to_out[1](hidden_states)

@@ -1,4 +1,5 @@
 image_finetune: false
+motion_lora_finetune: &motion_lora_finetune true
 
 output_dir: "outputs"
 pretrained_model_path: "models/StableDiffusion/stable-diffusion-v1-5"
@@ -20,6 +21,10 @@ unet_additional_kwargs:
     temporal_position_encoding_max_len : 32 # 24 for v1, 32 for v2
     temporal_attention_dim_div         : 1
     zero_initialize                    : true
+    use_lora                           : *motion_lora_finetune
+    lora_rank                          : 64
+    lora_alpha                         : 64
+
 
 noise_scheduler_kwargs:
   num_train_timesteps: 1000
@@ -43,7 +48,7 @@ validation_data:
   guidance_scale: 8.
 
 trainable_modules:
-  - "motion_modules."
+  - "lora."
 
 unet_checkpoint_path: ""
 
